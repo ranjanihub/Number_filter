@@ -29,6 +29,14 @@ def process_number(num_str):
     # Remove all non-digit characters (like spaces, dashes, etc.)
     digits = re.sub(r'\D', '', num_str)
     
+    # If the number is 11 digits and starts with 0, remove the leading 0
+    if len(digits) == 11 and digits.startswith('0'):
+        digits = digits[1:]
+        
+    # If the number is 12 digits and starts with India's country code (91), remove it
+    elif len(digits) == 12 and digits.startswith('91'):
+        digits = digits[2:]
+    
     # Valid mobile numbers must be EXACTLY 10 digits and start with 6, 7, 8, or 9
     if len(digits) == 10 and digits[0] in '6789':
         return digits
@@ -62,22 +70,24 @@ def process_csv_chunked(file, remove_duplicates, progress_text):
         
         for row_tuple in chunk.itertuples(index=False, name=None):
             valid_number_found = None
-            for val in row_tuple:
+            row_list = list(row_tuple)
+            for i, val in enumerate(row_list):
                 if is_empty(val):
                     continue
                 cleaned = process_number(val)
                 if cleaned:
                     valid_number_found = cleaned
+                    row_list[i] = cleaned
                     break
             
             if valid_number_found:
                 if remove_duplicates:
                     if valid_number_found not in valid_numbers:
                         valid_numbers.add(valid_number_found)
-                        output_rows.append(row_tuple)
+                        output_rows.append(row_list)
                         total_valid += 1
                 else:
-                    output_rows.append(row_tuple)
+                    output_rows.append(row_list)
                     total_valid += 1
             else:
                 total_invalid += 1
@@ -118,23 +128,25 @@ def process_excel_iterative(file, remove_duplicates, progress_text):
                     progress_text.text(f"Processing... {total_rows:,} rows scanned.")
                     
                 valid_number_found = None
-                for val in row:
+                row_list = list(row)
+                for i, val in enumerate(row_list):
                     if is_empty(val):
                         continue
                         
                     cleaned = process_number(val)
                     if cleaned:
                         valid_number_found = cleaned
+                        row_list[i] = cleaned
                         break
                         
                 if valid_number_found:
                     if remove_duplicates:
                         if valid_number_found not in valid_numbers:
                             valid_numbers.add(valid_number_found)
-                            output_rows.append(row)
+                            output_rows.append(row_list)
                             total_valid += 1
                     else:
-                        output_rows.append(row)
+                        output_rows.append(row_list)
                         total_valid += 1
                 else:
                     total_invalid += 1
@@ -157,7 +169,6 @@ def main():
         "**Note on File Size Limit:**\n\n"
         "Streamlit sets a default upload limit of 200MB.\n"
         "To allow uploads up to **600MB**, you must run this app using:\n\n"
-        "`streamlit run app.py --server.maxUploadSize 600`"
     )
     
     st.sidebar.header("Processing Settings")
