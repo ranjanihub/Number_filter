@@ -69,26 +69,38 @@ def process_csv_chunked(file, remove_duplicates, progress_text):
         progress_text.text(f"Processing... {total_rows:,} rows scanned.")
         
         for row_tuple in chunk.itertuples(index=False, name=None):
-            valid_number_found = None
+            extracted_numbers = []
+            col_idx = -1
             row_list = list(row_tuple)
+            
             for i, val in enumerate(row_list):
                 if is_empty(val):
                     continue
-                cleaned = process_number(val)
-                if cleaned:
-                    valid_number_found = cleaned
-                    row_list[i] = cleaned
+                
+                parts = re.split(r'[,/\|\n]', str(val))
+                for pt in parts:
+                    cleaned = process_number(pt)
+                    if cleaned:
+                        extracted_numbers.append(cleaned)
+                
+                if extracted_numbers:
+                    col_idx = i
                     break
             
-            if valid_number_found:
-                if remove_duplicates:
-                    if valid_number_found not in valid_numbers:
-                        valid_numbers.add(valid_number_found)
-                        output_rows.append(row_list)
+            if extracted_numbers:
+                for num in extracted_numbers:
+                    if remove_duplicates:
+                        if num not in valid_numbers:
+                            valid_numbers.add(num)
+                            new_row = row_list.copy()
+                            new_row[col_idx] = num
+                            output_rows.append(new_row)
+                            total_valid += 1
+                    else:
+                        new_row = row_list.copy()
+                        new_row[col_idx] = num
+                        output_rows.append(new_row)
                         total_valid += 1
-                else:
-                    output_rows.append(row_list)
-                    total_valid += 1
             else:
                 total_invalid += 1
                 
@@ -127,27 +139,38 @@ def process_excel_iterative(file, remove_duplicates, progress_text):
                 if total_rows % 5000 == 0:
                     progress_text.text(f"Processing... {total_rows:,} rows scanned.")
                     
-                valid_number_found = None
+                extracted_numbers = []
+                col_idx = -1
                 row_list = list(row)
+                
                 for i, val in enumerate(row_list):
                     if is_empty(val):
                         continue
                         
-                    cleaned = process_number(val)
-                    if cleaned:
-                        valid_number_found = cleaned
-                        row_list[i] = cleaned
+                    parts = re.split(r'[,/\|\n]', str(val))
+                    for pt in parts:
+                        cleaned = process_number(pt)
+                        if cleaned:
+                            extracted_numbers.append(cleaned)
+                            
+                    if extracted_numbers:
+                        col_idx = i
                         break
                         
-                if valid_number_found:
-                    if remove_duplicates:
-                        if valid_number_found not in valid_numbers:
-                            valid_numbers.add(valid_number_found)
-                            output_rows.append(row_list)
+                if extracted_numbers:
+                    for num in extracted_numbers:
+                        if remove_duplicates:
+                            if num not in valid_numbers:
+                                valid_numbers.add(num)
+                                new_row = row_list.copy()
+                                new_row[col_idx] = num
+                                output_rows.append(new_row)
+                                total_valid += 1
+                        else:
+                            new_row = row_list.copy()
+                            new_row[col_idx] = num
+                            output_rows.append(new_row)
                             total_valid += 1
-                    else:
-                        output_rows.append(row_list)
-                        total_valid += 1
                 else:
                     total_invalid += 1
         wb.close()
