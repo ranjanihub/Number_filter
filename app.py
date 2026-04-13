@@ -3,6 +3,7 @@ import pandas as pd
 import time
 import re
 import openpyxl
+import io
 
 # Configure the Streamlit page
 st.set_page_config(
@@ -54,15 +55,12 @@ def process_csv_chunked(file, remove_duplicates, progress_text):
     total_invalid = 0
     
     output_rows = []
-    headers = None
+    headers = ["Phone Number"]
     
     # Using low_memory=False to prevent mixed type warnings and chunksize to avoid memory overload
     chunk_iter = pd.read_csv(file, chunksize=50000, dtype=str, on_bad_lines='skip', low_memory=False)
     
     for chunk in chunk_iter:
-        if headers is None:
-            headers = list(chunk.columns)
-            
         total_rows += len(chunk)
         
         # Update progress text
@@ -70,7 +68,6 @@ def process_csv_chunked(file, remove_duplicates, progress_text):
         
         for row_tuple in chunk.itertuples(index=False, name=None):
             extracted_numbers = []
-            col_idx = -1
             row_list = list(row_tuple)
             
             for i, val in enumerate(row_list):
@@ -82,31 +79,23 @@ def process_csv_chunked(file, remove_duplicates, progress_text):
                     cleaned = process_number(pt)
                     if cleaned:
                         extracted_numbers.append(cleaned)
-                
-                if extracted_numbers:
-                    col_idx = i
-                    break
             
             if extracted_numbers:
                 for num in extracted_numbers:
                     if remove_duplicates:
                         if num not in valid_numbers:
                             valid_numbers.add(num)
-                            new_row = row_list.copy()
-                            new_row[col_idx] = num
-                            output_rows.append(new_row)
+                            output_rows.append([num])
                             total_valid += 1
                     else:
-                        new_row = row_list.copy()
-                        new_row[col_idx] = num
-                        output_rows.append(new_row)
+                        output_rows.append([num])
                         total_valid += 1
             else:
                 total_invalid += 1
                 
     return output_rows, headers, total_rows, total_valid, total_invalid
 
-def process_excel_iterative(file, remove_duplicates, progress_text):
+def process_excel_iterative(file, remove_duplicates, progress_text, selected_sheets=None):
     """
     Memory optimized Excel processing using openpyxl in read-only mode.
     Generator-based iteration prevents holding entire rows/sheets in memory.
@@ -117,31 +106,31 @@ def process_excel_iterative(file, remove_duplicates, progress_text):
     total_invalid = 0
     
     output_rows = []
-    headers = None
+    headers = ["Phone Number"]
     
     try:
         # read_only=True ensures memory efficient row-by-row iteration without loading whole document
         wb = openpyxl.load_workbook(file, read_only=True, data_only=True)
-        for sheet_index, sheet_name in enumerate(wb.sheetnames):
+        
+        if selected_sheets:
+            sheets_to_process = [s for s in selected_sheets if s in wb.sheetnames]
+        else:
+            sheets_to_process = wb.sheetnames
+
+        for sheet_name in sheets_to_process:
             ws = wb[sheet_name]
             
             # Use values_only=True to get raw values directly, skipping cell objects metadata (much faster/lighter)
             for row_idx, row in enumerate(ws.iter_rows(values_only=True)):
                 total_rows += 1
                 
-                if headers is None and sheet_index == 0 and row_idx == 0:
-                    headers = [f"Col_{i+1}" if is_empty(col) else str(col) for i, col in enumerate(row)]
-                    continue
-                elif sheet_index > 0 and row_idx == 0:
-                    continue
-                
                 # Update UI periodically to prevent slowing down the loop
                 if total_rows % 5000 == 0:
                     progress_text.text(f"Processing... {total_rows:,} rows scanned.")
                     
                 extracted_numbers = []
-                col_idx = -1
-                row_list = list(row)
+                # Ensure row is a list
+                row_list = list(row) if row is not None else []
                 
                 for i, val in enumerate(row_list):
                     if is_empty(val):
@@ -153,23 +142,15 @@ def process_excel_iterative(file, remove_duplicates, progress_text):
                         if cleaned:
                             extracted_numbers.append(cleaned)
                             
-                    if extracted_numbers:
-                        col_idx = i
-                        break
-                        
                 if extracted_numbers:
                     for num in extracted_numbers:
                         if remove_duplicates:
                             if num not in valid_numbers:
                                 valid_numbers.add(num)
-                                new_row = row_list.copy()
-                                new_row[col_idx] = num
-                                output_rows.append(new_row)
+                                output_rows.append([num])
                                 total_valid += 1
                         else:
-                            new_row = row_list.copy()
-                            new_row[col_idx] = num
-                            output_rows.append(new_row)
+                            output_rows.append([num])
                             total_valid += 1
                 else:
                     total_invalid += 1
@@ -177,21 +158,18 @@ def process_excel_iterative(file, remove_duplicates, progress_text):
     except Exception as e:
         raise RuntimeError(f"Failed to read Excel file appropriately. Make sure the file isn't corrupted. Error details: {str(e)}")
         
-    if not headers and output_rows:
-        headers = [f"Col_{i}" for i in range(len(output_rows[0]))]
-        
     return output_rows, headers, total_rows, total_valid, total_invalid
 
 def main():
     st.title("Indian Mobile Number Extractor")
-    st.markdown("Upload large CSV or Excel files (up to **600MB**) to extract valid Indian mobile phone numbers efficiently. Processing is optimized to prevent out-of-memory crashes.")
+    st.markdown("Upload large CSV or Excel files (up to **600MB**) to extract valid Indian mobile phone numbers efficiently.")
     
     # Instructions for 600MB limit configuration
     st.sidebar.markdown("### Upload Instructions")
     st.sidebar.info(
-        "**Note on File Size Limit:**\n\n"
-        "Streamlit sets a default upload limit of 200MB.\n"
-        "To allow uploads up to **600MB**, you must run this app using:\n\n"
+        "**Note:**\n\n"
+        "If **CSV File** is not uploaded, then upload the **Excel file**.\n"
+        "\nStreamlit sets a default upload limit of 200MB."
     )
     
     st.sidebar.header("Processing Settings")
@@ -208,6 +186,27 @@ def main():
             st.error(f"File size limit exceeded! Your file is {file_size_mb:.2f}MB. Please upload a file smaller than 600MB.")
             return
             
+        is_csv = uploaded_file.name.lower().endswith('.csv')
+        selected_sheets = None
+        
+        if not is_csv:
+            try:
+                # Load workbook efficiently to fetch sheet names
+                wb_temp = openpyxl.load_workbook(uploaded_file, read_only=True)
+                wb_sheets = wb_temp.sheetnames
+                wb_temp.close()
+                selected_sheets = st.multiselect("Select Sheets to Filter", wb_sheets, default=wb_sheets)
+                
+                # Reset file pointer after reading headers
+                uploaded_file.seek(0)
+                
+                if not selected_sheets:
+                    st.warning("Please select at least one sheet to process.")
+                    return
+            except Exception as e:
+                st.error(f"Error reading Excel file sheets: {e}")
+                return
+
         # UI controls and processing triggers
         col_btn, _ = st.columns([1, 4])
         with col_btn:
@@ -225,13 +224,10 @@ def main():
                 progress_text.text("Starting extraction...")
                 st.session_state.processed_data = None # Reset previous outputs
                 
-                # Check extension and route to specific memory optimized parser
-                is_csv = uploaded_file.name.lower().endswith('.csv')
-                
                 if is_csv:
                     results = process_csv_chunked(uploaded_file, remove_duplicates, progress_text)
                 else:
-                    results = process_excel_iterative(uploaded_file, remove_duplicates, progress_text)
+                    results = process_excel_iterative(uploaded_file, remove_duplicates, progress_text, selected_sheets)
                     
                 output_rows, headers, total_rows_proc, total_valid, total_invalid = results
                 
@@ -244,8 +240,8 @@ def main():
                 # Render Metrics
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("Rows Processed", f"{total_rows_proc:,}")
-                col2.metric("Valid Rows", f"{total_valid:,}")
-                col3.metric("Invalid Rows Removed", f"{total_invalid:,}")
+                col2.metric("Valid Numbers", f"{total_valid:,}")
+                col3.metric("Invalid Rows/Cells", f"{total_invalid:,}")
                 
                 valid_percent = 0
                 if (total_valid + total_invalid) > 0:
@@ -260,13 +256,17 @@ def main():
                     st.dataframe(df_out.head(100), use_container_width=True)
                     
                     # Store valid list internally and generate bytes for UI
-                    csv_data = df_out.to_csv(index=False).encode('utf-8')
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        df_out.to_excel(writer, index=False, sheet_name='Filtered Numbers')
+                    
+                    excel_data = output.getvalue()
                     
                     st.download_button(
-                        label="Download Cleaned File as CSV",
-                        data=csv_data,
-                        file_name=f'cleaned_file_{int(time.time())}.csv',
-                        mime='text/csv',
+                        label="Download Cleaned File as Excel",
+                        data=excel_data,
+                        file_name=f'Phone_Numbers_Only_{int(time.time())}.xlsx',
+                        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                         type="primary"
                     )
                 else:
