@@ -44,12 +44,13 @@ def process_number(num_str):
         
     return None
 
-def process_csv_chunked(file, remove_duplicates, progress_text):
+def process_csv_chunked(file, remove_duplicates, progress_text, valid_numbers=None):
     """
     Memory optimized CSV processing using pandas chunk_size.
     We iterate over chunks of data instead of loading the entire file.
     """
-    valid_numbers = set()
+    if valid_numbers is None:
+        valid_numbers = set()
     total_rows = 0
     total_valid = 0
     total_invalid = 0
@@ -95,12 +96,13 @@ def process_csv_chunked(file, remove_duplicates, progress_text):
                 
     return output_rows, headers, total_rows, total_valid, total_invalid
 
-def process_excel_iterative(file, remove_duplicates, progress_text, selected_sheets=None):
+def process_excel_iterative(file, remove_duplicates, progress_text, selected_sheets=None, valid_numbers=None):
     """
     Memory optimized Excel processing using openpyxl in read-only mode.
     Generator-based iteration prevents holding entire rows/sheets in memory.
     """
-    valid_numbers = set()
+    if valid_numbers is None:
+        valid_numbers = set()
     total_rows = 0
     total_valid = 0
     total_invalid = 0
@@ -162,43 +164,37 @@ def process_excel_iterative(file, remove_duplicates, progress_text, selected_she
 
 def main():
     st.title("Indian Mobile Number Extractor")
-    st.markdown("Upload large CSV or Excel files (up to **600MB**) to extract valid Indian mobile phone numbers efficiently.")
+    st.markdown("Upload large CSV or Excel files (up to **1GB**) to extract valid Indian mobile phone numbers efficiently.")
     
-    # Instructions for 600MB limit configuration
+    # Instructions for 1GB limit configuration
     st.sidebar.markdown("### Upload Instructions")
     st.sidebar.info(
         "**Note:**\n\n"
         "If **CSV File** is not uploaded, then upload the **Excel file**.\n"
-        "\nStreamlit sets a default upload limit of 200MB."
+        "\nStreamlit upload limit has been increased to 1GB."
     )
     
     st.sidebar.header("Processing Settings")
     remove_duplicates = st.sidebar.checkbox("Remove Duplicate Numbers", value=True, help="Toggle to filter out identical numbers across all columns.")
     
     # File uploader
-    uploaded_file = st.file_uploader("Choose a CSV or Excel file", type=['csv', 'xlsx'])
+    uploaded_files = st.file_uploader("Choose CSV or Excel files", type=['csv', 'xlsx'], accept_multiple_files=True)
     
-    if uploaded_file is not None:
-        file_size_mb = uploaded_file.size / (1024 * 1024)
+    if uploaded_files:
+        st.write(f"**Total Files Uploaded:** {len(uploaded_files)}")
         
-        # Server-side validation just in case the limit was bypassed
-        if file_size_mb > 600:
-            st.error(f"File size limit exceeded! Your file is {file_size_mb:.2f}MB. Please upload a file smaller than 600MB.")
-            return
-            
-        is_csv = uploaded_file.name.lower().endswith('.csv')
+        # If there's exactly one Excel file, allow sheet selection
+        excel_files = [f for f in uploaded_files if not f.name.lower().endswith('.csv')]
         selected_sheets = None
         
-        if not is_csv:
+        if len(excel_files) == 1:
             try:
                 # Load workbook efficiently to fetch sheet names
-                wb_temp = openpyxl.load_workbook(uploaded_file, read_only=True)
+                wb_temp = openpyxl.load_workbook(excel_files[0], read_only=True)
                 wb_sheets = wb_temp.sheetnames
                 wb_temp.close()
-                selected_sheets = st.multiselect("Select Sheets to Filter", wb_sheets, default=wb_sheets)
-                
-                # Reset file pointer after reading headers
-                uploaded_file.seek(0)
+                selected_sheets = st.multiselect(f"Select Sheets for {excel_files[0].name}", wb_sheets, default=wb_sheets)
+                excel_files[0].seek(0)
                 
                 if not selected_sheets:
                     st.warning("Please select at least one sheet to process.")
@@ -206,50 +202,72 @@ def main():
             except Exception as e:
                 st.error(f"Error reading Excel file sheets: {e}")
                 return
+        elif len(excel_files) > 1:
+            st.info("Multiple Excel files detected. All sheets in all Excel files will be processed.")
 
         # UI controls and processing triggers
         col_btn, _ = st.columns([1, 4])
         with col_btn:
-            start_process = st.button("Process Data", use_container_width=True)
+            start_process = st.button("Process All Files", use_container_width=True)
             
         if start_process:
             start_time = time.time()
-            
-            # Placeholder for progress
             progress_bar = st.progress(0)
             progress_text = st.empty()
             
             try:
-                progress_bar.progress(10) # Initial progress state
-                progress_text.text("Starting extraction...")
-                st.session_state.processed_data = None # Reset previous outputs
+                all_output_rows = []
+                all_total_rows = 0
+                all_total_valid = 0
+                all_total_invalid = 0
+                total_valid_numbers_set = set() # For cross-file deduplication
                 
-                if is_csv:
-                    results = process_csv_chunked(uploaded_file, remove_duplicates, progress_text)
-                else:
-                    results = process_excel_iterative(uploaded_file, remove_duplicates, progress_text, selected_sheets)
+                num_files = len(uploaded_files)
+                
+                for i, uploaded_file in enumerate(uploaded_files):
+                    file_name = uploaded_file.name
+                    file_size_mb = uploaded_file.size / (1024 * 1024)
                     
-                output_rows, headers, total_rows_proc, total_valid, total_invalid = results
+                    if file_size_mb > 1024:
+                        st.error(f"Skipping {file_name}: File size ({file_size_mb:.2f}MB) exceeds 1GB limit.")
+                        continue
+                    
+                    progress_text.text(f"File {i+1}/{num_files}: {file_name}...")
+                    
+                    is_csv = file_name.lower().endswith('.csv')
+                    
+                    if is_csv:
+                        results = process_csv_chunked(uploaded_file, remove_duplicates, progress_text, valid_numbers=total_valid_numbers_set)
+                    else:
+                        sheets = selected_sheets if (len(excel_files) == 1) else None
+                        results = process_excel_iterative(uploaded_file, remove_duplicates, progress_text, sheets, valid_numbers=total_valid_numbers_set)
+                    
+                    output_rows, headers, total_rows_proc, total_valid, total_invalid = results
+                    all_output_rows.extend(output_rows)
+                    all_total_rows += total_rows_proc
+                    all_total_valid += total_valid
+                    all_total_invalid += total_invalid
+                    
+                    # Update global progress bar based on files count
+                    progress_bar.progress(int((i + 1) / num_files * 100))
                 
                 processing_time = time.time() - start_time
-                
-                progress_bar.progress(100)
                 progress_text.empty()
                 st.success(f"Processing Complete in {processing_time:.2f} seconds!")
                 
                 # Render Metrics
                 col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Rows Processed", f"{total_rows_proc:,}")
-                col2.metric("Valid Numbers", f"{total_valid:,}")
-                col3.metric("Invalid Rows/Cells", f"{total_invalid:,}")
+                col1.metric("Rows Processed", f"{all_total_rows:,}")
+                col2.metric("Valid Numbers", f"{all_total_valid:,}")
+                col3.metric("Invalid Rows/Cells", f"{all_total_invalid:,}")
                 
                 valid_percent = 0
-                if (total_valid + total_invalid) > 0:
-                    valid_percent = (total_valid / (total_valid + total_invalid)) * 100
+                if (all_total_valid + all_total_invalid) > 0:
+                    valid_percent = (all_total_valid / (all_total_valid + all_total_invalid)) * 100
                 col4.metric("Valid Ratio", f"{valid_percent:.2f}%")
                 
-                if len(output_rows) > 0:
-                    df_out = pd.DataFrame(output_rows, columns=headers)
+                if len(all_output_rows) > 0:
+                    df_out = pd.DataFrame(all_output_rows, columns=["Phone Number"])
                     
                     st.divider()
                     st.subheader("Preview (First 100 Entries)")
@@ -263,14 +281,14 @@ def main():
                     excel_data = output.getvalue()
                     
                     st.download_button(
-                        label="Download Cleaned File as Excel",
+                        label="Download Combined Cleaned File as Excel",
                         data=excel_data,
-                        file_name=f'Phone_Numbers_Only_{int(time.time())}.xlsx',
+                        file_name=f'Combined_Phone_Numbers_{int(time.time())}.xlsx',
                         mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                         type="primary"
                     )
                 else:
-                    st.warning("No valid Indian phone numbers were found in the file.")
+                    st.warning("No valid Indian phone numbers were found in the uploaded files.")
                     
             except Exception as e:
                 progress_bar.empty()
